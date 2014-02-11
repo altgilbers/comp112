@@ -18,7 +18,7 @@
 #include <netinet/tcp.h>
 #include <ifaddrs.h>
 #include <netdb.h>
-#include <values.h> 
+#include <limits.h> 
 #include <fcntl.h> 
 
 /*=============================
