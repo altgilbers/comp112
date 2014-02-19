@@ -229,7 +229,7 @@ again:
 			gettimeofday(&end,NULL);
 			timersub(&end,&start,&tmp);
 			fprintf(stderr,"----timed out (%ld.%06d). (%d consecutive)  asking for more: %ld.%06d -------\n",timeout.tv_sec,timeout.tv_usec,timeouts_since_last_response,tmp.tv_sec,tmp.tv_usec);
-			timeradd(&timeout,&inc,&timeout);  // double the timeout, each time... for small files this won't matter.. large files seem to have more jitter
+			timeradd(&timeout,&min,&timeout);  // increase the timeout, each time... for small files this won't matter.. large files seem to have more jitter
 			/* timeout */ 
 			// no new blocks, so let's check our files for completeness and request missing blocks.
 			finished=TRUE;
