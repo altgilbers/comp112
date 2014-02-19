@@ -1,33 +1,56 @@
-// this is a UDP file service client based upon 
-// a simple file completion strategy
+/*===========================================================================
 
-/*=============================
-  Starting solution for Assignment 2: UDP file transfer
-  the intent of this file is to demonstrate how to 
-  call the helper routines. It will help you avoid some
-  common errors. IT DOES NOT SOLVE THE PROBLEM. 
-  =============================*/ 
+  Comp 112 Networks HW2 - UDP File Transfer
+
+  My solution to this problem takes a list of files, and sends a request for all
+  blocks in that file.  It then waits for a response and handles the blocks sent
+  from the server.  Each block is recorded into the appropriate file at the 
+  appropriate offset.   Blocks are tracked and when all blocks have been received
+  the program cleans up and exits.
+
+  Trade-offs...   Due to the nature of UDP (exacerbated by the "goofiness" of the
+  server, some blocks will not be delivered and must be re-requested.  If a time-
+  out is set to low, the client may request blocks that have already been sent, 
+  adding to the network overhead.  If the timeout is set too long, the time to
+  deliver the file will be too long.
+
+  I tried to create an adaptive timeout, which would "poll" the connection by 
+  recording the time that the first request was transmitted then recording the 
+  time of the first response packet (and adding a little cushion to account for 
+  "jitter".  This didn't work too well, unless I padded with a lot of cushion.
+  I don't know how much (if any) additional delay is introduced intentionally
+  by the server.
+
+  I tested it locally with 20 files simultaneously and with files as large as
+  2^24 bytes. Larger files made the timeouts a little unpredictable
+
+  =============================================================================*/
 
 #include "help.h" 
 
 #define TRUE  1
 #define FALSE 0
 
+// bookkeeping data structure
 struct file_meta{
-	char *file_name;
-	int fd;
-	int done;
-	long num_blocks;
-	struct bits fbits;
-	struct timeval last_request;
+	char *file_name;				// name of file in filesystem
+	int fd;							// file descriptor 
+	int done;						// done flag..  set to -1 initially, zero when a block is received, and 1 when the file is complete
+	long num_blocks;				// number of blocks in file, for convenience
+	long blocks_written;		
+	long resends;
+	struct bits fbits;				// bit array for tracking which blocks have been received
+	struct timeval last_request;	// timestamp of the last block received (used in determining when to quit)
 };
 typedef struct file_meta file_meta;
 
-
+/* Function to request resends for missing blocks.   It aggregates contiguous block
+   ranges to minimize the number of resend requests needed to complete the file.
+   It takes a pointer to a file_meta record and the socket and file parameters.
+ */
 int resend(file_meta *F, int sockfd, const char *address, int port)
 {
-	int ranges[MAXRANGES];
-	int i=0,j=0,requested_ranges=0;
+	int i=0,requested_ranges=0,c=-1,b=0;
 	struct command loc_cmd;
 	struct command_network net_cmd;
 	struct sockaddr_in server_addr;
@@ -40,21 +63,21 @@ int resend(file_meta *F, int sockfd, const char *address, int port)
 	memset(&loc_cmd, 0, sizeof(loc_cmd));
 	strcpy(loc_cmd.filename, F->file_name);
 	loc_cmd.nranges=0;
-	int c=-1,b=0;
-	//fprintf(stderr,"Creating ranges for file: %s, with %llu total blocks.\n",F->file_name,F->fbits.nbits);
-	while(i<F->fbits.nbits) // loop through all blocks
+	//fprintf(stderr,"Creating ranges for file: %s, with %llu blocks.\n",F->file_name,F->fbits.nbits);
+	while(i<F->fbits.nbits) 					// loop through all blocks
 	{
-		if(bits_testbit(&F->fbits,i))   	// found missing block, so start range
+		if(bits_testbit(&F->fbits,i))			// found missing block, so start range
 		{		
-			c++;  				// move to next range
-			b++;				// increment block counter (stats)
+			c++;							// move to next range
+			b++;							// increment block counter (stats)
 			loc_cmd.nranges=c+1;			// update number of ranges
 			loc_cmd.ranges[c].first_block = i;	// this is the start of the "hole"
-			loc_cmd.ranges[c].last_block=F->num_blocks;  // in case we get to the end and haven't set this..
+			loc_cmd.ranges[c].last_block=F->num_blocks;  // if no more missing
 			i++;
 			while(i<F->fbits.nbits)
 			{
-				if(!bits_testbit(&F->fbits,i))  // found the next non-missing block, so the previous block is the end of the range
+				if(!bits_testbit(&F->fbits,i))	// next present block, so prev
+					// block is end of the range
 				{
 					loc_cmd.ranges[c].last_block = i-1; 
 					b+=loc_cmd.ranges[c].last_block-loc_cmd.ranges[c].first_block;
@@ -65,35 +88,25 @@ int resend(file_meta *F, int sockfd, const char *address, int port)
 		}
 		i++;  
 		if(c==MAXRANGES-1){	// filled up a resend packet, so send it away..
-		//	fprintf(stderr,"Filled up a resend packet for %s...  sending it away\n",loc_cmd.filename);
-		//	for(j=0;j<=c;j++)
-		//		fprintf(stderr,"%d(%llu-%llu)%s",j+1,loc_cmd.ranges[j].first_block,loc_cmd.ranges[j].last_block,((j+1)%6==0)?"\n":",");
 			command_local_to_network(&loc_cmd, &net_cmd);
-			int sendsize = COMMAND_SIZE(loc_cmd.nranges);
-			int ret = sendto(sockfd, (void *)&net_cmd, sendsize, 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+			int ret = sendto(sockfd, (void *)&net_cmd, COMMAND_SIZE(loc_cmd.nranges), 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
 			if (ret<0)
 				perror("send_command");
-	//		fprintf(stderr,"sent %llu ranges, for %s\n",loc_cmd.nranges,loc_cmd.filename);
-			c=-1;  //reset range counter
-			requested_ranges+=12;
-			loc_cmd.nranges=0;
+			// resets and bookkeeping:
+			c=-1;  requested_ranges+=12;  loc_cmd.nranges=0;
 		}
 	}
 
 	if(c>-1)  //unsent, partial command
 	{
-	//	fprintf(stderr,"Sending non-full resend request\n");
-	//	for(j=0;j<=c;j++)
-	//		fprintf(stderr,"%d(%llu-%llu)%s",j+1,loc_cmd.ranges[j].first_block,loc_cmd.ranges[j].last_block,((j+1)%6==0)?"\n":",");
 		command_local_to_network(&loc_cmd, &net_cmd); 
-		int sendsize = COMMAND_SIZE(loc_cmd.nranges);
-		int ret = sendto(sockfd, (void *)&net_cmd, sendsize, 0, (struct sockaddr *)&server_addr, sizeof(server_addr)); 
+		int ret = sendto(sockfd, (void *)&net_cmd, COMMAND_SIZE(loc_cmd.nranges), 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
 		if (ret<0) 
 			perror("send_command"); 
-	//	fprintf(stderr,"sent %llu ranges, for %s\n",loc_cmd.nranges,loc_cmd.filename);
 		requested_ranges+=c+1;
 	}
 	fprintf(stderr,"Requested resends for %d ranges, %d blocks for %s.\n",requested_ranges,b,loc_cmd.filename);
+	F->resends+=b;
 	return 1;
 }
 
@@ -109,7 +122,7 @@ int main(int argc, char **argv)
 
 	int a;
 	int file_count=argc-4;   // all arguments past the first 4 are considered to be filenames
-
+	int timeouts_since_last_response=0;
 	// allocate space to store file_names (anything past 4th argument)
 	file_meta *state = (file_meta *) malloc(file_count*sizeof(file_meta));
 	if (state==NULL)
@@ -122,8 +135,10 @@ int main(int argc, char **argv)
 		if(state[a].fd==-1){
 			perror("Can't open file"); exit(0);
 		}
-		fprintf(stdout,"File descriptor used for \"%s\" is %d\n",state[a].file_name,state[a].fd);
+		//fprintf(stdout,"File descriptor used for \"%s\" is %d\n",state[a].file_name,state[a].fd);
 		state[a].done=-1;
+		state[a].resends=0;
+		state[a].blocks_written=0;
 		state[a].num_blocks=-1;
 		state[a].last_request.tv_sec=0; state[a].last_request.tv_usec=0;
 	}
@@ -177,37 +192,65 @@ int main(int argc, char **argv)
 	fprintf(stderr, "client: Receiving on %s, port %d\n", client_dotted, client_port); 
 
 	// send initial requests for files
+	struct timeval start,tmp,end,timeout,inc,eighth;
+	gettimeofday(&start,NULL);
 	for (a=0;a<file_count;a++){  
 		send_command(sockfd, server_dotted, server_port, state[a].file_name, 0, INT_MAX); 
 		fprintf(stdout, "client: requesting %s blocks %d-%d\n",state[a].file_name, 0, INT_MAX);
 	}
 
-	int which_file;
 	long pos=0,offset=0;
-	int i;	
-	int finished = FALSE; // set to TRUE when you think you're done
-	long timeout=500000;
+	int i, which_file, finished = FALSE; // set to TRUE when you think you're done
+	int got_any_packet=0;
+
+	timeout.tv_sec=0;
+	timeout.tv_usec=1000;
+	eighth.tv_sec=0;
+	eighth.tv_usec=125000;
 	while (!finished) { 
 		int retval; 
 again: 
-		if ((retval = select_block(sockfd, 0, 125000))==0) { 
+		if ((retval = select_block(sockfd, (int)timeout.tv_sec, (int)timeout.tv_usec))==0) { 
+			timeouts_since_last_response++;	
+			if(timeouts_since_last_response>10)
+			{
+				fprintf(stderr,"10 timeouts with no reply..   Server not responding!\n");
+				finished=TRUE;
+				break;
+			}
+			if(got_any_packet==0){		// haven't recieved a packet, let's increase the timeout
+				gettimeofday(&end,NULL);
+				timersub(&end,&start,&tmp);
+				fprintf(stderr,"----Waiting for first packet ELAPSED TIME: %ld.%06d Timeout: %ld.%06d-------\n",tmp.tv_sec,tmp.tv_usec,timeout.tv_sec,timeout.tv_usec);
+				timeradd(&timeout,&timeout,&tmp);
+				timeout.tv_sec=tmp.tv_sec;
+				timeout.tv_usec=tmp.tv_usec;
+				continue;						
+			}
+			gettimeofday(&end,NULL);
+			timersub(&end,&start,&tmp);
+			fprintf(stderr,"----timed out (%ld.%06d). (%d consecutive)  asking for more: %ld.%06d -------\n",timeout.tv_sec,timeout.tv_usec,timeouts_since_last_response,tmp.tv_sec,tmp.tv_usec);
+			timeradd(&timeout,&inc,&timeout);  // double the timeout, each time... for small files this won't matter.. large files seem to have more jitter
 			/* timeout */ 
 			// no new blocks, so let's check our files for completeness and request missing blocks.
-			// TODO - don't want to re-request until we've 
-			fprintf(stderr,"No blocks..  we hit select's timeout\n");
 			finished=TRUE;
 			for(i=0;i<file_count;i++)
 			{
-				if(!state[i].done)
+				if(state[i].done<1)
 					finished=FALSE;
 			}
 			if(finished)
 				break;
 			for (a=0;a<file_count;a++){  
-				if(!state[a].done){
-					//bits_printlist(&state[a].fbits);
-					//fprintf(stderr,"Successfully printed bitlist\n");
+				if(state[a].done==0){
+					//bits_printlist(&state[a].fbits); fprintf(stderr,"Successfully printed bitlist\n");
 					resend(&state[a],sockfd,server_dotted,server_port);
+				}
+				if(state[a].done==-1 && timeouts_since_last_response>1)
+				{
+					fprintf(stderr,"Never got a reply for %s, resending initial request.\n",state[a].file_name);	
+			                state[a].resends++;
+					send_command(sockfd, server_dotted, server_port, state[a].file_name, 0, INT_MAX);
 				}
 			}
 
@@ -223,10 +266,8 @@ again:
 		else { 
 			/* input is waiting, read it */ 
 			struct sockaddr_in resp_sockaddr; 	/* address/port pair */ 
-			int resp_len; 			/* length used */ 
 			char resp_dotted[INET_ADDRSTRLEN]; 	/* human-readable address */ 
 			int resp_port; 			/* port */ 
-			int resp_mesglen; 			/* length of message */ 
 			struct block b; 
 
 			recv_block(sockfd, &b, &resp_sockaddr);
@@ -235,11 +276,32 @@ again:
 
 			//fprintf(stderr, "client: %s:%d sent %s block %llu (range 0-%llu)\n",resp_dotted, resp_port, b.filename, b.which_block, b.total_blocks);
 
-			int which_file=-1;
+			which_file=-1;
 			for (a=0;a<file_count;a++){
-				//fprintf(stderr,"[%s] [%s]\n",state[a].file_name, b.filename);
 				if (strcmp(state[a].file_name, b.filename)==0){
 					which_file=a;
+					timeouts_since_last_response=0;
+					if(got_any_packet<1)		// got first packet... I'll use this to determine my select timeout
+					{
+						struct timeval tmp1,tmp2;
+						gettimeofday(&tmp1,NULL);
+						timersub(&tmp1,&start,&tmp2);
+
+						if(tmp2.tv_sec<=0 && tmp2.tv_usec<125000)	
+						{
+							fprintf(stderr,"Timeout too short... upping to .125s\n");
+							timeout.tv_sec=eighth.tv_sec;
+							timeout.tv_usec=eighth.tv_usec;
+						}
+						else
+						{
+							timeout.tv_sec=tmp2.tv_sec;
+							timeout.tv_usec=tmp2.tv_usec;
+						}
+						got_any_packet++;
+						fprintf(stderr,"First packet received after: %ld.%06d sec, setting timeout to:%ld.%06d sec.\n",tmp2.tv_sec,tmp2.tv_usec,timeout.tv_sec,timeout.tv_usec);
+					}
+
 				}}
 			//fprintf(stderr,"preparing to write to file %d: %s, which has file descriptor %d\n",which_file,b.filename,state[which_file].fd);
 			if(which_file==-1)  // this block is for a file we didn't request
@@ -252,7 +314,7 @@ again:
 			// First block for a file is special.. we need to set up bookkeeping
 
 			if(state[which_file].done==-1){
-				//fprintf(stdout,"Received first block (%llu) for filename %s.\n",b.which_block,b.filename);
+				fprintf(stdout,"Received first block (%llu) for filename %s.\n",b.which_block,b.filename);
 				bits_alloc(&(state[which_file].fbits), b.total_blocks);
 				//fprintf(stderr,"[%s]\n",state[which_file].file_name);
 				bits_setrange(&(state[which_file].fbits),0,b.total_blocks-1);
@@ -261,12 +323,22 @@ again:
 			}
 			if(state[which_file].done==1)
 			{
-				fprintf(stderr,"recieved block for file %s that is complete... ignoring..\n",b.filename);
+				fprintf(stderr,"recieved block for file %s that is complete... maybe the timeout is too short... ignoring..\n",b.filename);
 				continue;
 			}
 			offset=b.which_block*PAYLOADSIZE;   // offset to where we want to seek
 			pos=lseek(state[which_file].fd, offset, SEEK_SET); // seek to proper offset for block
+			if(pos!=offset)
+			{
+				fprintf(stderr,"Error seeking\n");exit(0);
+			}
 			int written=write(state[which_file].fd, b.payload, b.paysize); 
+			if (written != b.paysize)
+			{
+				fprintf(stderr,"Error writing");exit(0);
+			}
+			state[which_file].blocks_written++;
+			gettimeofday(&state[which_file].last_request,NULL);
 			bits_clearbit(&state[which_file].fbits, b.which_block); // mark block as written
 			if (bits_empty(&state[which_file].fbits)){              // all blocks marked?
 				fprintf(stdout,"-=-=-=-=-=-=-=-= %s - file complete!  -=-=-=-=-=-=-=-=\n",b.filename);
@@ -276,14 +348,30 @@ again:
 			} 
 		} 
 	}
-	//cleanup
-	//for (a=0;a<file_count;a++){
-	//		if(done[a]==1)
-	//		  bits_free(&fbits[a]);
-	//		free(file_names[a]);
-	//	}
-	//	free(fbits);
+
+	// Summary:
+	fprintf(stderr,"--------------------------------------------------------------------\n");
+	fprintf(stderr,"%-20s%10s\t%s\t%s\t%s\n","Filename","Complete","written","resends","ET");
+	fprintf(stderr,"--------------------------------------------------------------------\n");
+	long total_written=0,total_resent=0;
+	for(i=0;i<file_count;i++)
+	{
+		timersub(&state[i].last_request,&start,&tmp);
+		total_written+=state[i].blocks_written;
+		total_resent+=state[i].resends;
+		fprintf(stderr,"%-20s%-10s\t%ld\t%ld\t%ld.%06d\n",state[i].file_name,state[i].done>0?"yes":"no",state[i].blocks_written,state[i].resends,tmp.tv_sec,tmp.tv_usec);
+	}
+	fprintf(stderr,"--------------------------------------------------------------------\n");
+	gettimeofday(&end,NULL); timersub(&end,&start,&tmp);
+	fprintf(stderr,"%-20s%-10s\t%ld\t%ld\t%ld.%06d\n","Total:","-",total_written,total_resent,tmp.tv_sec,tmp.tv_usec);
+
+
+	// Cleanup
+	for(i=0;i<file_count;i++)
+	{
+		bits_free(&state[i].fbits);
+		free(state[i].file_name);
+		close(state[i].fd);  // in case it was still open
+	}
 	free(state);
-
-
 }

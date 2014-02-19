@@ -1,4 +1,4 @@
-CFLAGS= -g
+CFLAGS= -g -Wall
 
 all: client server server.c help.c help.h help.o 
 
@@ -10,7 +10,7 @@ client: client.c help.o help.h
 server: server.c help.o help.h
 	gcc $(CFLAGS) server.c help.o -o server
 help.o: help.c help.h
-	gcc $(CFLAGS) help.c
+	gcc $(CFLAGS) -c help.c
 	
 # link files that might change
 #server: /comp/112/a/a2/server
