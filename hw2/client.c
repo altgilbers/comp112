@@ -127,7 +127,6 @@ int main(int argc, char **argv)
 	file_meta *state = (file_meta *) malloc(file_count*sizeof(file_meta));
 	if (state==NULL)
 		exit(0);
-	fprintf(stderr,"allocated some bytes..\n");
 	for (a=0;a<file_count;a++){
 		state[a].file_name = (char *) malloc(strlen(argv[a+4])+1);
 		strcpy(state[a].file_name,argv[a+4]);
@@ -192,7 +191,7 @@ int main(int argc, char **argv)
 	fprintf(stderr, "client: Receiving on %s, port %d\n", client_dotted, client_port); 
 
 	// send initial requests for files
-	struct timeval start,tmp,end,timeout,inc,eighth;
+	struct timeval start,tmp,end,timeout,inc,min;
 	gettimeofday(&start,NULL);
 	for (a=0;a<file_count;a++){  
 		send_command(sockfd, server_dotted, server_port, state[a].file_name, 0, INT_MAX); 
@@ -205,8 +204,8 @@ int main(int argc, char **argv)
 
 	timeout.tv_sec=0;
 	timeout.tv_usec=1000;
-	eighth.tv_sec=0;
-	eighth.tv_usec=125000;
+	min.tv_sec=0;
+	min.tv_usec=250000;
 	while (!finished) { 
 		int retval; 
 again: 
@@ -287,11 +286,11 @@ again:
 						gettimeofday(&tmp1,NULL);
 						timersub(&tmp1,&start,&tmp2);
 
-						if(tmp2.tv_sec<=0 && tmp2.tv_usec<125000)	
+						if(tmp2.tv_sec<min.tv_usec && tmp2.tv_usec<min.tv_usec)	
 						{
 							fprintf(stderr,"Timeout too short... upping to .125s\n");
-							timeout.tv_sec=eighth.tv_sec;
-							timeout.tv_usec=eighth.tv_usec;
+							timeout.tv_sec=min.tv_sec;
+							timeout.tv_usec=min.tv_usec;
 						}
 						else
 						{
