@@ -219,7 +219,7 @@ ssize_t send_del(int sockfd, const struct sockaddr *to_addr, const char *key) {
     ssize_t size = ((char *)((&net_msg.u.del)+1)-(char *)&net_msg);
 /* set up cmd structure */ 
     memset(&loc_msg, 0, sizeof(loc_msg)); 
-    loc_msg.magic=MAGIC_NOT; 
+    loc_msg.magic=MAGIC_DEL;
     strncpy(loc_msg.u.del.key, key, KEYLEN); 
 /* translate to network order */ 
     packet_local_to_network(&loc_msg, &net_msg) ; 
@@ -238,7 +238,7 @@ ssize_t send_dak(int sockfd, const struct sockaddr *to_addr, const char *key) {
     ssize_t size = ((char *)((&net_msg.u.dak)+1)-(char *)&net_msg);
 /* set up cmd structure */ 
     memset(&loc_msg, 0, sizeof(loc_msg)); 
-    loc_msg.magic=MAGIC_NOT; 
+    loc_msg.magic=MAGIC_DAK; 
     strncpy(loc_msg.u.dak.key, key, KEYLEN); 
 /* translate to network order */ 
     packet_local_to_network(&loc_msg, &net_msg) ; 
