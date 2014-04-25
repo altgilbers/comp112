@@ -18,7 +18,13 @@
 #include <netinet/tcp.h>
 #include <ifaddrs.h>
 #include <netdb.h>
-#include <values.h> 
+
+#ifdef __linux
+	#include <values.h> 
+#elif __APPLE__
+	#include <limits.h>
+#endif
+
 #include <signal.h> 
 #include <openssl/md5.h> 
 
