@@ -98,7 +98,8 @@ int main(int argc, char **argv)
 
 	strncpy(target_command,argv[3],sizeof(target_command)); 
 	if (strncmp(target_command, "get", 3)!=0 
-         && strncmp(target_command, "put", 3)!=0) { 
+         && strncmp(target_command, "put", 3)!=0
+	 && strncmp(target_command, "del", 3)!=0) { 
 	    fprintf(stderr,"Invalid command %s\n", target_command); 
 	    client_usage(); 
 	    exit(1); 
