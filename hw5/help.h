@@ -33,6 +33,7 @@
 #define MAGIC_NOT 5	/* get nak: no value */ 
 #define MAGIC_DEL 6	/* Extra credit: delete a key/value pair */ 
 #define MAGIC_DAK 7	/* Extra credit: ack that it was deleted */ 
+#define MAGIC_PING 8	/* Extra credit: ack that it was deleted */ 
 #define KEYLEN 128	/* key length */ 
 #define VALLEN 1024	/* value length */ 
 
@@ -64,7 +65,13 @@ struct packet {
 	} del; 
         struct dak { // when magic==MAGIC_DAK
 	    char key[KEYLEN]; 
-	} dak; 
+	} dak;
+
+////////   My discriminants ////
+        struct ping { // when magic==MAGIC_DAK
+            int junk;
+        } ping;
+	 
     } u; 
 } ; 
 
@@ -104,6 +111,9 @@ extern ssize_t send_del(int sockfd, const struct sockaddr *to_addr,
 // Extra credit: your response 
 extern ssize_t send_dak(int sockfd, const struct sockaddr *to_addr, 
 	const char *key) ; 
+
+
+extern ssize_t send_ping(int sockfd, const struct sockaddr *to_addr);
 
 /* receive a packet from a server */ 
 extern ssize_t recv_packet(int sockfd, struct packet *p,
