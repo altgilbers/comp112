@@ -1,3 +1,14 @@
+//
+/*
+
+My approach here is record every PUT and DEL with the timestamp the request was received..
+
+I'll resend these messages to all my peers, so they all nodes know what the others have seen.
+
+When a GET comes in, I'll hold it for a short time 
+
+*/
+
 #include "help.h" 
 #include <pthread.h>
 #define TRUE  1
@@ -50,7 +61,8 @@ void printLog()
 	}
 }
 
-// This function runs in a separate thread and just broadcasts out a beacon, letting other nodes know that it is available
+// This function runs in a separate thread and just broadcasts out a beacon, letting other nodes know that it is available.
+// This beacon includes a timestamp of the last message it knows about and a hash of the 
 void* pinger(void *arg)
 {
 	int	sockfd,i;
@@ -72,7 +84,7 @@ void* pinger(void *arg)
 	{
 		recv_addr.sin_addr.s_addr=broadcast_s_addr;		
 		send_ping(sockfd,(struct sockaddr *)&recv_addr); 
-		usleep(999999);
+		usleep(100000);
 	}
 }
 
@@ -96,7 +108,7 @@ void* printer(void* arg)
 		}
 		pthread_mutex_unlock(&mutex1);
 		printLog();
-		usleep(250000);
+		usleep(500000);
 	}
 }
 
@@ -106,23 +118,29 @@ void* printer(void* arg)
 void* receiver(void* arg)
 {
 	int sockfd,send_port;
-	struct sockaddr_in recv_addr, send_addr;
+	struct sockaddr_in recv_addr, send_addr, broadcast_addr;
 	int mesglen; char message[MAX_MESG];
 	unsigned int send_len;
-	char send_dotted[INET_ADDRSTRLEN];
+	char send_dotted[INET_ADDRSTRLEN],recv_dotted[INET_ADDRSTRLEN],primary_dotted[INET_ADDRSTRLEN];
 	struct in_addr primary;
-	primary.s_addr=INADDR_ANY;
-	char primary_dotted[INET_ADDRSTRLEN];
+	get_primary_addr(&primary);
 	inet_ntop(AF_INET, &primary, primary_dotted, INET_ADDRSTRLEN);
 	fprintf(stderr, "Running on %s, port %d\n",primary_dotted, port);
 
 	/* make a socket*/
 	sockfd = socket(PF_INET, SOCK_DGRAM, 0);
 
+
+
 	memset(&recv_addr, 0, sizeof(recv_addr));
 	recv_addr.sin_family      = PF_INET;
 	recv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	recv_addr.sin_port        = htons(port);
+
+	memset(&broadcast_addr, 0, sizeof(broadcast_addr));
+	broadcast_addr.sin_family      = PF_INET;
+	broadcast_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+	broadcast_addr.sin_port        = htons(port);
 
 	if (bind(sockfd, (struct sockaddr *) &recv_addr, sizeof(recv_addr))<0)
 		perror("bind");
@@ -148,7 +166,7 @@ void* receiver(void* arg)
 
 			int found,z;
 			switch (local.magic) { 
-				case MAGIC_PUT: 
+				case MAGIC_PUT:
 					fprintf(stderr, "%s:%d: put (%s=>{%s})\n",
 							send_dotted,send_port,
 							local.u.put.key, local.u.put.value);
@@ -160,8 +178,31 @@ void* receiver(void* arg)
 					memcpy(&session_log[c].source,&send_addr,sizeof(struct sockaddr));
 					gettimeofday(&session_log[c].timestamp,NULL);
 					c++;
+					send_sput(sockfd, (struct sockaddr *)&broadcast_addr,local.u.put.key, local.u.put.value,&session_log[c].timestamp);
 					send_ack(sockfd, (struct sockaddr *)&send_addr, local.u.put.key, local.u.put.value); 
 					break; 
+                                case MAGIC_SPUT:
+					fprintf(stderr,"%s\n",send_dotted);
+					if(send_addr.sin_addr.s_addr==primary.s_addr)
+					{
+						fprintf(stderr,"this is my own broadcast...I'll ignore it!\n");
+					}
+					else
+					{
+                                        fprintf(stderr, "%s:%d: sput (%s=>{%s})\n",
+                                                        send_dotted,send_port,
+                                                        local.u.sput.key, local.u.sput.value);
+                                        rbtree_put(local.u.sput.key, local.u.sput.value);
+                                        rbtree_print();
+				
+                                        memcpy(&session_log[c].key,&local.u.sput.key,KEYLEN);
+                                        memcpy(&session_log[c].value,&local.u.sput.value,VALLEN);
+                                        memcpy(&session_log[c].source,&send_addr,sizeof(struct sockaddr));
+                                        gettimeofday(&session_log[c].timestamp,NULL);
+                                        c++;
+                                       }
+					 break;
+
 				case MAGIC_GET: 
 					fprintf(stderr, "%s:%d: get (%s)\n",
 							send_dotted,send_port,
@@ -171,9 +212,12 @@ void* receiver(void* arg)
 					} else { 
 						send_not(sockfd, (struct sockaddr *)&send_addr, local.u.get.key); 
 					} 
-					break; 
+					break;
+				case MAGIC_ACK:
+					fprintf(stderr,"Got ack commadn for key: %s\n",local.u.ack.key); 
+					break;
 				case MAGIC_DEL:
-					fprintf(stderr,"Got del command for key: %s",local.u.del.key);
+					fprintf(stderr,"Got del command for key: %s\n",local.u.del.key);
 					break;
 				case MAGIC_PING:
 					found=0;

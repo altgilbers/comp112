@@ -55,6 +55,14 @@ void packet_local_to_network(const struct packet *local, struct packet *net) {
 	// add your own types here
 	//////////////////////////////
         case MAGIC_PING:
+            memcpy((void *)&(net->u.ping),
+                   (const void *)&(local->u.ping),
+                   sizeof(local->u.ping));
+            break;
+        case MAGIC_SPUT:
+            memcpy((void *)&(net->u.sput),
+                   (const void *)&(local->u.sput),
+                   sizeof(local->u.sput));
             break;
 
 
@@ -107,8 +115,17 @@ void packet_network_to_local(struct packet *local, const struct packet *net) {
 	//////////////////////////////
 	// add your own types here
 	//////////////////////////////
-	case MAGIC_PING:
-		break;
+        case MAGIC_PING:
+            memcpy((void *)&(local->u.ping),
+                   (const void *)&(net->u.ping),
+                   sizeof(local->u.ping));
+            break;
+        case MAGIC_SPUT:
+            memcpy((void *)&(local->u.sput),
+                   (const void *)&(net->u.sput),
+                   sizeof(local->u.sput));
+            break;
+
 	default: 
 	    fprintf(stderr, "packet_network_to_local: invalid magic number %ld\n", local->magic); 
 	    break; 
@@ -272,7 +289,27 @@ ssize_t send_ping(int sockfd, const struct sockaddr *to_addr) {
     return ret;
 }
 
+ssize_t send_sput(int sockfd, const struct sockaddr *to_addr, const char *key, const char *value, const struct timeval *t){
 
+    struct packet loc_msg;
+    struct packet net_msg;
+    // compute size of the union element we need. 
+    ssize_t size = ((char *)((&net_msg.u.sput)+1)-(char *)&net_msg);
+/* set up cmd structure */
+    memset(&loc_msg, 0, sizeof(loc_msg));
+    loc_msg.magic=MAGIC_SPUT;
+    strncpy(loc_msg.u.sput.key, key, KEYLEN);
+    strncpy(loc_msg.u.sput.value, value, VALLEN);
+    loc_msg.u.sput.t.tv_sec=t->tv_sec;
+    loc_msg.u.sput.t.tv_usec=t->tv_usec;
+/* translate to network order */
+    packet_local_to_network(&loc_msg, &net_msg) ;
+/* send the packet */
+    ssize_t ret = sendto(sockfd, (void *)&net_msg, size, 0,
+        (struct sockaddr *)to_addr, sizeof(struct sockaddr));
+    if (ret<0) perror("send_sput");
+    return ret;
+}
 
 
 

@@ -39,7 +39,8 @@
 #define MAGIC_NOT 5	/* get nak: no value */ 
 #define MAGIC_DEL 6	/* Extra credit: delete a key/value pair */ 
 #define MAGIC_DAK 7	/* Extra credit: ack that it was deleted */ 
-#define MAGIC_PING 8	/* Extra credit: ack that it was deleted */ 
+#define MAGIC_PING 8	/* I'm alive! */
+#define MAGIC_SPUT 9 /* Server put... includes timestamp  */
 #define KEYLEN 128	/* key length */ 
 #define VALLEN 1024	/* value length */ 
 
@@ -75,8 +76,13 @@ struct packet {
 
 ////////   My discriminants ////
         struct ping { // when magic==MAGIC_DAK
-            int junk;
+            struct timeval t;
         } ping;
+	struct sput {
+	   char key[KEYLEN];
+	   char value[VALLEN];
+	   struct timeval t;
+	} sput;
 	 
     } u; 
 } ; 
@@ -120,6 +126,9 @@ extern ssize_t send_dak(int sockfd, const struct sockaddr *to_addr,
 
 
 extern ssize_t send_ping(int sockfd, const struct sockaddr *to_addr);
+
+extern ssize_t send_sput(int sockfd, const struct sockaddr *to_addr,
+        const char *key, const char *value, const struct timeval *t) ;
 
 /* receive a packet from a server */ 
 extern ssize_t recv_packet(int sockfd, struct packet *p,
